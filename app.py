@@ -3,10 +3,10 @@ import pandas as pd
 import os
 import requests
 import random
-import time
 from datetime import datetime
 from transformers import pipeline
 import tweepy
+from streamlit_autorefresh import st_autorefresh
 
 # ---------------------- INITIALISATION ---------------------- #
 
@@ -53,7 +53,7 @@ load_tweets_from_csv()
 
 # ---------------------- COLLECTE DE TWEETS ---------------------- #
 
-def collect_recent_tweets(bearer_token, keywords, max_results=20):
+def collect_recent_tweets(bearer_token, keywords, max_results=10):
     headers = {"Authorization": f"Bearer {bearer_token}"}
     query = " OR ".join([k.strip() for k in keywords if k.strip()]) + " -is:retweet lang:fr"
 
@@ -63,6 +63,10 @@ def collect_recent_tweets(bearer_token, keywords, max_results=20):
     )
 
     response = requests.get(url, headers=headers)
+
+    if response.status_code == 429:
+        st.warning("⚠️ Limite d'utilisation de l'API atteinte. Veuillez réessayer plus tard.")
+        return []
 
     if response.status_code != 200:
         st.error(f"🚫 Erreur lors de la collecte des tweets : {response.status_code} - {response.json()}")
@@ -117,7 +121,7 @@ def publish_tweet(api, tweet_text):
 
 # ---------------------- LOGIQUE D'AUTONOMIE ---------------------- #
 
-def autonomous_agent(api, bearer_token, keywords, max_results=10):
+def autonomous_agent(api, bearer_token, keywords, max_results=5):
     new_tweets = collect_recent_tweets(bearer_token, keywords, max_results)
     if new_tweets:
         generated_tweet = generate_tweet_from_trends(st.session_state.tweets)
@@ -130,21 +134,21 @@ st.title("🐦 Agent Twitter AI Autonome - Dashboard")
 keywords_input = st.text_input("🔎 Mots-clés à suivre (séparés par des virgules):", "cryptomonnaie, blockchain, web3, politique, technologies")
 keywords = [k.strip() for k in keywords_input.split(",") if k.strip()]
 
-max_results = st.slider("Nombre de tweets à collecter par recherche :", min_value=5, max_value=50, value=20, step=5)
+max_results = st.slider("Nombre de tweets à collecter par recherche :", min_value=1, max_value=10, value=5, step=1)
 
 # Activation/Désactivation de l'autonomie
 if st.button("🚀 Activer l'autonomie" if not st.session_state.autonomy_enabled else "⏹️ Désactiver l'autonomie"):
     st.session_state.autonomy_enabled = not st.session_state.autonomy_enabled
     st.success("✅ Autonomie activée." if st.session_state.autonomy_enabled else "🛑 Autonomie désactivée.")
 
-# Si autonomie activée, exécution automatique toutes les 10 minutes
+# Si autonomie activée, exécution automatique toutes les 60 minutes (pour éviter la limite d'API)
 if st.session_state.autonomy_enabled:
-    st.info("🤖 L'agent est en mode autonome. Collecte et publication automatiques en cours...")
+    st.info("🤖 L'agent est en mode autonome. Collecte et publication automatiques toutes les 60 minutes.")
     api = load_twitter_api()
     bearer_token = load_bearer_token()
     if api and bearer_token:
         autonomous_agent(api, bearer_token, keywords, max_results)
-    st.experimental_autorefresh(interval=600000, key="autorefresh")  # Refresh toutes les 10 minutes
+    st_autorefresh(interval=3600000, key="autorefresh")  # Refresh toutes les 60 minutes
 
 # Boutons manuels pour collecte et génération de tweets
 col1, col2 = st.columns(2)
