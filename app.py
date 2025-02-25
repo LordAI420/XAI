@@ -1,4 +1,4 @@
-twitter_ai_agent/
-app.py 
-twitter_bot.py
-requirements.txt
+import streamlit as st
+
+st.title("Agent Twitter AI 🐦")
+st.write("Ce tableau de bord affiche les tweets collectés.")
