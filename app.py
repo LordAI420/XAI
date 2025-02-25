@@ -1,23 +1,16 @@
 import streamlit as st
 import pandas as pd
 import threading
-import time
-import tweepy
 import os
 from datetime import datetime
 from transformers import pipeline
+import tweepy
 
 # ---------------------- INITIALISATION ---------------------- #
 
 def load_twitter_api():
-    consumer_key = st.secrets["API_KEY"]
-    consumer_secret = st.secrets["API_SECRET"]
-    access_token = st.secrets["ACCESS_TOKEN"]
-    access_token_secret = st.secrets["ACCESS_TOKEN_SECRET"]
-
-    auth = tweepy.OAuth1UserHandler(consumer_key, consumer_secret, access_token, access_token_secret)
-    api = tweepy.API(auth, wait_on_rate_limit=True)
-    return api
+    bearer_token = st.secrets["BEARER_TOKEN"]
+    return bearer_token
 
 sentiment_analyzer = pipeline("sentiment-analysis")
 
@@ -42,30 +35,42 @@ def load_tweets_from_csv():
 load_tweets_from_csv()
 
 # ---------------------- STREAMING ---------------------- #
-class MyStreamListener(tweepy.Stream):
-    def on_status(self, status):
-        if hasattr(status, "retweeted_status") or status.lang != "fr":
+class MyStreamListener(tweepy.StreamingClient):
+    def on_tweet(self, tweet):
+        if tweet.lang != "fr" or hasattr(tweet, "referenced_tweets"):
             return
 
-        sentiment, score = analyze_sentiment(status.text)
+        sentiment, score = analyze_sentiment(tweet.text)
         new_tweet = {
             "Date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            "Utilisateur": status.user.screen_name,
-            "Texte": status.text,
+            "Utilisateur": tweet.author_id,
+            "Texte": tweet.text,
             "Sentiment": sentiment,
             "Score": score
         }
-        st.session_state.tweets = pd.concat([pd.DataFrame([new_tweet]), st.session_state.tweets], ignore_index=True)
+        
+        st.session_state.tweets = pd.concat(
+            [pd.DataFrame([new_tweet]), st.session_state.tweets],
+            ignore_index=True
+        )
         save_tweets_to_csv()
 
-    def on_error(self, status_code):
-        if status_code == 420:
-            st.error("🚫 Limite de taux atteinte. L'agent va se mettre en pause.")
-            return False
+    def on_errors(self, errors):
+        st.error(f"Erreur rencontrée : {errors}")
 
-def collect_tweets(api, keywords):
-    stream = MyStreamListener(api.auth.consumer_key, api.auth.consumer_secret, api.auth.access_token, api.auth.access_token_secret)
-    threading.Thread(target=stream.filter, kwargs={'track': keywords, 'languages': ["fr"], 'is_async': True}).start()
+def collect_tweets(bearer_token, keywords):
+    stream = MyStreamListener(bearer_token)
+    # Supprimer d'anciennes règles si elles existent
+    existing_rules = stream.get_rules().data
+    if existing_rules:
+        rule_ids = [rule.id for rule in existing_rules]
+        stream.delete_rules(rule_ids)
+    
+    # Ajouter de nouvelles règles
+    stream.add_rules(tweepy.StreamRule(value=" OR ".join(keywords)))
+    
+    # Démarrer le stream dans un thread séparé
+    threading.Thread(target=stream.filter, kwargs={'tweet_fields': ['lang', 'author_id'], 'threaded': True}).start()
     return stream
 
 # ---------------------- INTERFACE STREAMLIT ---------------------- #
@@ -79,8 +84,8 @@ col1, col2 = st.columns(2)
 with col1:
     if st.button("▶️ Démarrer l'agent"):
         if not st.session_state.agent_running:
-            api = load_twitter_api()
-            st.session_state.stream = collect_tweets(api, keywords)
+            bearer_token = load_twitter_api()
+            st.session_state.stream = collect_tweets(bearer_token, keywords)
             st.session_state.agent_running = True
             st.success("✅ Agent démarré.")
         else:
