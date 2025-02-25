@@ -9,7 +9,9 @@ import tweepy
 # ---------------------- INITIALISATION ---------------------- #
 
 def load_twitter_api():
-    bearer_token = st.secrets["BEARER_TOKEN"]
+    bearer_token = st.secrets.get("BEARER_TOKEN")
+    if not bearer_token:
+        st.error("❌ Bearer Token manquant. Veuillez le configurer dans les secrets Streamlit.")
     return bearer_token
 
 sentiment_analyzer = pipeline("sentiment-analysis")
@@ -48,7 +50,7 @@ class MyStreamListener(tweepy.StreamingClient):
             "Sentiment": sentiment,
             "Score": score
         }
-        
+
         st.session_state.tweets = pd.concat(
             [pd.DataFrame([new_tweet]), st.session_state.tweets],
             ignore_index=True
@@ -60,18 +62,29 @@ class MyStreamListener(tweepy.StreamingClient):
 
 def collect_tweets(bearer_token, keywords):
     stream = MyStreamListener(bearer_token)
-    # Supprimer d'anciennes règles si elles existent
-    existing_rules = stream.get_rules().data
-    if existing_rules:
-        rule_ids = [rule.id for rule in existing_rules]
-        stream.delete_rules(rule_ids)
-    
-    # Ajouter de nouvelles règles
-    stream.add_rules(tweepy.StreamRule(value=" OR ".join(keywords)))
-    
-    # Démarrer le stream dans un thread séparé
-    threading.Thread(target=stream.filter, kwargs={'tweet_fields': ['lang', 'author_id'], 'threaded': True}).start()
-    return stream
+
+    try:
+        existing_rules = stream.get_rules()
+        if existing_rules and existing_rules.data:
+            rule_ids = [rule.id for rule in existing_rules.data]
+            stream.delete_rules(rule_ids)
+
+        cleaned_keywords = [k.strip() for k in keywords if k.strip()]
+        if cleaned_keywords:
+            stream.add_rules(tweepy.StreamRule(value=" OR ".join(cleaned_keywords)))
+        else:
+            st.warning("⚠️ Aucun mot-clé valide fourni. Veuillez entrer des mots-clés valides.")
+            return None
+
+        threading.Thread(target=stream.filter, kwargs={'tweet_fields': ['lang', 'author_id'], 'threaded': True}).start()
+        return stream
+
+    except tweepy.errors.Forbidden as e:
+        st.error("🚫 Accès interdit. Vérifiez les autorisations de votre application Twitter et le Bearer Token.")
+        return None
+    except Exception as e:
+        st.error(f"🚫 Erreur inattendue : {e}")
+        return None
 
 # ---------------------- INTERFACE STREAMLIT ---------------------- #
 
@@ -85,9 +98,14 @@ with col1:
     if st.button("▶️ Démarrer l'agent"):
         if not st.session_state.agent_running:
             bearer_token = load_twitter_api()
-            st.session_state.stream = collect_tweets(bearer_token, keywords)
-            st.session_state.agent_running = True
-            st.success("✅ Agent démarré.")
+            if bearer_token:
+                stream = collect_tweets(bearer_token, keywords)
+                if stream:
+                    st.session_state.stream = stream
+                    st.session_state.agent_running = True
+                    st.success("✅ Agent démarré.")
+                else:
+                    st.error("🚫 Impossible de démarrer l'agent.")
         else:
             st.warning("⚠️ L'agent est déjà en cours d'exécution.")
 
