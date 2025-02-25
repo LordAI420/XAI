@@ -8,6 +8,7 @@ import os
 from transformers import pipeline
 from datetime import datetime
 import re
+from bs4 import BeautifulSoup
 
 # ---------------------- INITIALISATION ---------------------- #
 
@@ -37,9 +38,9 @@ if "combined_data" not in st.session_state:
 # ---------------------- FONCTIONS UTILES ---------------------- #
 
 def clean_text(text):
-    """Nettoie le texte en supprimant le HTML et les caractères spéciaux."""
-    text = re.sub(r'<.*?>', '', text)  # Supprimer les balises HTML
-    text = re.sub(r'[^A-Za-zÀ-ÖØ-öø-ÿ0-9 .,!?]', '', text)  # Caractères autorisés
+    """Nettoie le texte en supprimant le HTML, les balises et les caractères spéciaux."""
+    text = BeautifulSoup(text, "html.parser").get_text()  # Supprime les balises HTML
+    text = re.sub(r'[^A-Za-zÀ-ÖØ-öø-ÿ0-9 .,!?\n]', '', text)  # Supprime les caractères spéciaux
     return text.strip()
 
 def analyze_sentiment(text):
@@ -70,12 +71,13 @@ def collect_reddit_posts(reddit, subreddit_name, limit=10):
     try:
         subreddit = reddit.subreddit(subreddit_name)
         for post in subreddit.hot(limit=limit):
-            sentiment, score = analyze_sentiment(post.title + " " + (post.selftext or ""))
+            text = f"{post.title} {(post.selftext or '')}"
+            sentiment, score = analyze_sentiment(text)
             posts.append({
                 "Plateforme": "Reddit",
                 "Date": datetime.fromtimestamp(post.created_utc).strftime('%Y-%m-%d %H:%M:%S'),
                 "Utilisateur": post.author.name if post.author else "Anonyme",
-                "Texte": post.title + " " + (post.selftext or ""),
+                "Texte": clean_text(text),
                 "Sentiment": sentiment,
                 "Score": score
             })
@@ -88,7 +90,7 @@ def collect_mastodon_toots(mastodon, hashtag, limit=10):
     try:
         toots = mastodon.timeline_hashtag(hashtag, limit=limit)
         for toot in toots:
-            content = toot['content']
+            content = clean_text(toot['content'])
             sentiment, score = analyze_sentiment(content)
             posts.append({
                 "Plateforme": "Mastodon",
@@ -105,7 +107,7 @@ def collect_mastodon_toots(mastodon, hashtag, limit=10):
 def load_open_source_dataset(file):
     try:
         df = pd.read_csv(file)
-        df['Texte'] = df['Texte'].astype(str)
+        df['Texte'] = df['Texte'].astype(str).map(clean_text)
         df['Sentiment'], df['Score'] = zip(*df['Texte'].map(analyze_sentiment))
         df['Plateforme'] = 'Dataset'
         return df[['Plateforme', 'Date', 'Utilisateur', 'Texte', 'Sentiment', 'Score']]
@@ -122,11 +124,12 @@ def generate_trend_based_post(data):
     frequent_words = pd.Series(' '.join(data['Texte']).lower().split()).value_counts().head(5).index.tolist()
     trend = random.choice(frequent_words) if frequent_words else "innovation"
     top_sentiment = data['Sentiment'].mode()[0]
+    example_text = random.choice(data['Texte'].tolist())
 
     post_templates = [
-        f"La discussion sur #{trend} est en plein essor aujourd'hui. Partagez vos pensées !",
-        f"Les utilisateurs ressentent principalement un sentiment {top_sentiment.lower()} autour de #{trend}. Qu'en pensez-vous ?",
-        f"#{trend} est au cœur des débats. Voici ce qui est dit : {random.choice(data['Texte'].tolist())}"
+        f"🚀 La discussion sur #{trend} est en plein essor aujourd'hui. Partagez vos pensées !",
+        f"💬 Les utilisateurs ressentent principalement un sentiment {top_sentiment.lower()} autour de #{trend}. Qu'en pensez-vous ?",
+        f"📢 #{trend} est au cœur des débats. Voici ce qui est dit :\n" + example_text
     ]
 
     return random.choice(post_templates)
@@ -189,7 +192,7 @@ st.markdown("---")
 st.subheader("✍️ Génération de contenu basé sur les tendances")
 if st.button("Générer un post basé sur les tendances"):
     generated_post = generate_trend_based_post(st.session_state.combined_data)
-    st.success(f"📝 Post généré : {generated_post}")
+    st.success(f"📝 Post généré :\n{generated_post}")
 
 st.markdown("---")
 
