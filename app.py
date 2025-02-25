@@ -1,29 +1,20 @@
 import streamlit as st
 import pandas as pd
 import os
+import requests
 from datetime import datetime
 from transformers import pipeline
-import tweepy
 
 # ---------------------- INITIALISATION ---------------------- #
 
-def load_twitter_api():
-    api_key = st.secrets["API_KEY"]
-    api_secret = st.secrets["API_SECRET"]
-    access_token = st.secrets["ACCESS_TOKEN"]
-    access_token_secret = st.secrets["ACCESS_TOKEN_SECRET"]
-
-    if not all([api_key, api_secret, access_token, access_token_secret]):
-        st.error("❌ Clés API manquantes. Vérifiez vos secrets Streamlit.")
-        return None
-
-    auth = tweepy.OAuth1UserHandler(api_key, api_secret, access_token, access_token_secret)
-    api = tweepy.API(auth, wait_on_rate_limit=True)
-    return api
+def load_bearer_token():
+    bearer_token = st.secrets.get("BEARER_TOKEN")
+    if not bearer_token:
+        st.error("❌ Bearer Token manquant. Vérifiez vos secrets Streamlit.")
+    return bearer_token
 
 sentiment_analyzer = pipeline("sentiment-analysis")
 
-# Initialisation des états Streamlit
 if "tweets" not in st.session_state:
     st.session_state.tweets = pd.DataFrame(columns=["Date", "Utilisateur", "Texte", "Sentiment", "Score"])
 
@@ -40,43 +31,52 @@ def load_tweets_from_csv():
 
 load_tweets_from_csv()
 
-# ---------------------- COLLECTE DE TWEETS ---------------------- #
+# ---------------------- COLLECTE DE TWEETS (API V2) ---------------------- #
 
-def collect_recent_tweets(api, keywords, max_results=20):
+def collect_recent_tweets(bearer_token, keywords, max_results=20):
+    headers = {"Authorization": f"Bearer {bearer_token}"}
     query = " OR ".join([k.strip() for k in keywords if k.strip()]) + " -is:retweet lang:fr"
     
-    try:
-        tweets = api.search_tweets(q=query, count=max_results, tweet_mode="extended", lang="fr")
-        
-        if not tweets:
-            st.info("🔍 Aucun tweet trouvé pour les mots-clés fournis.")
-            return
+    url = (
+        f"https://api.twitter.com/2/tweets/search/recent?"
+        f"query={query}&max_results={max_results}&tweet.fields=author_id,created_at"
+    )
 
-        new_tweets = []
-        for tweet in tweets:
-            sentiment, score = analyze_sentiment(tweet.full_text)
-            new_tweets.append({
-                "Date": tweet.created_at.strftime('%Y-%m-%d %H:%M:%S'),
-                "Utilisateur": tweet.user.screen_name,
-                "Texte": tweet.full_text,
-                "Sentiment": sentiment,
-                "Score": score
-            })
+    response = requests.get(url, headers=headers)
 
-        st.session_state.tweets = pd.concat([
-            pd.DataFrame(new_tweets),
-            st.session_state.tweets
-        ], ignore_index=True).drop_duplicates(subset=["Texte"])
-        
-        save_tweets_to_csv()
-        st.success(f"✅ {len(new_tweets)} tweets collectés avec succès.")
+    if response.status_code != 200:
+        st.error(f"🚫 Erreur lors de la collecte des tweets : {response.status_code} - {response.json()}")
+        return
 
-    except tweepy.TweepyException as e:
-        st.error(f"🚫 Erreur lors de la collecte des tweets : {e}")
+    data = response.json()
+    tweets = data.get("data", [])
+
+    if not tweets:
+        st.info("🔍 Aucun tweet trouvé pour les mots-clés fournis.")
+        return
+
+    new_tweets = []
+    for tweet in tweets:
+        sentiment, score = analyze_sentiment(tweet["text"])
+        new_tweets.append({
+            "Date": tweet["created_at"],
+            "Utilisateur": tweet["author_id"],
+            "Texte": tweet["text"],
+            "Sentiment": sentiment,
+            "Score": score
+        })
+
+    st.session_state.tweets = pd.concat(
+        [pd.DataFrame(new_tweets), st.session_state.tweets],
+        ignore_index=True
+    ).drop_duplicates(subset=["Texte"])
+
+    save_tweets_to_csv()
+    st.success(f"✅ {len(new_tweets)} tweets collectés avec succès.")
 
 # ---------------------- INTERFACE STREAMLIT ---------------------- #
 
-st.title("🐦 Agent Twitter AI - Dashboard (Version Gratuite)")
+st.title("🐦 Agent Twitter AI - Dashboard (Version Gratuite API v2)")
 
 keywords_input = st.text_input("🔎 Mots-clés à rechercher (séparés par des virgules):", "cryptomonnaie, blockchain, web3, politique, technologies")
 keywords = [k.strip() for k in keywords_input.split(",") if k.strip()]
@@ -84,9 +84,9 @@ keywords = [k.strip() for k in keywords_input.split(",") if k.strip()]
 max_results = st.slider("Nombre de tweets à collecter par recherche :", min_value=5, max_value=50, value=20, step=5)
 
 if st.button("📥 Collecter les tweets"):
-    api = load_twitter_api()
-    if api:
-        collect_recent_tweets(api, keywords, max_results)
+    bearer_token = load_bearer_token()
+    if bearer_token:
+        collect_recent_tweets(bearer_token, keywords, max_results)
 
 st.markdown("---")
 
