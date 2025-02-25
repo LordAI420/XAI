@@ -9,7 +9,7 @@ import tweepy
 
 def load_twitter_api():
     api_key = st.secrets["6HeKGQ0Ja5j8a7m0whFa2RmtS"]
-    api_secret = st.secrets["API_SEjm8VamfS3ysMr8JD5zBQTeWWd183deWKYyGvQmVdlmlPOLKvdnCRET"]
+    api_secret = st.secrets["jm8VamfS3ysMr8JD5zBQTeWWd183deWKYyGvQmVdlmlPOLKvdn"]
     access_token = st.secrets["1894174463119495168-uVebuhJ3sQOac4kovU6Xnl9HJrmD8y"]
     access_token_secret = st.secrets["9Q0X6HSPA3J7ltpi46R8YogqqiUMHQWgq4cAAmEe3DHcL"]
 
