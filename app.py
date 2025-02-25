@@ -7,6 +7,8 @@ import os
 from datetime import datetime
 from transformers import pipeline
 
+# ---------------------- INITIALISATION ---------------------- #
+
 def load_twitter_api():
     consumer_key = st.secrets["API_KEY"]
     consumer_secret = st.secrets["API_SECRET"]
@@ -19,7 +21,7 @@ def load_twitter_api():
 
 sentiment_analyzer = pipeline("sentiment-analysis")
 
-# Initialisation de la session Streamlit
+# Initialisation des états Streamlit
 if "agent_running" not in st.session_state:
     st.session_state.agent_running = False
 
@@ -30,32 +32,6 @@ def analyze_sentiment(text):
     result = sentiment_analyzer(text)[0]
     return result['label'], round(result['score'] * 100, 2)
 
-def collect_tweets(api, keywords):
-    class MyStreamListener(tweepy.StreamListener):
-        def on_status(self, status):
-            if hasattr(status, "retweeted_status") or status.lang != "fr":
-                return
-
-            sentiment, score = analyze_sentiment(status.text)
-            new_tweet = {
-                "Date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                "Utilisateur": status.user.screen_name,
-                "Texte": status.text,
-                "Sentiment": sentiment,
-                "Score": score
-            }
-            st.session_state.tweets = pd.concat([pd.DataFrame([new_tweet]), st.session_state.tweets], ignore_index=True)
-            save_tweets_to_csv()
-
-        def on_error(self, status_code):
-            if status_code == 420:
-                return False  # Stop stream on rate limit
-
-    stream_listener = MyStreamListener()
-    stream = tweepy.Stream(auth=api.auth, listener=stream_listener)
-    stream.filter(track=keywords, is_async=True)
-    return stream
-
 def save_tweets_to_csv():
     st.session_state.tweets.to_csv("tweets.csv", index=False)
 
@@ -65,16 +41,46 @@ def load_tweets_from_csv():
 
 load_tweets_from_csv()
 
+# ---------------------- STREAMING ---------------------- #
+class MyStreamListener(tweepy.Stream):
+    def on_status(self, status):
+        if hasattr(status, "retweeted_status") or status.lang != "fr":
+            return
+
+        sentiment, score = analyze_sentiment(status.text)
+        new_tweet = {
+            "Date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            "Utilisateur": status.user.screen_name,
+            "Texte": status.text,
+            "Sentiment": sentiment,
+            "Score": score
+        }
+        st.session_state.tweets = pd.concat([pd.DataFrame([new_tweet]), st.session_state.tweets], ignore_index=True)
+        save_tweets_to_csv()
+
+    def on_error(self, status_code):
+        if status_code == 420:
+            st.error("🚫 Limite de taux atteinte. L'agent va se mettre en pause.")
+            return False
+
+def collect_tweets(api, keywords):
+    stream = MyStreamListener(api.auth.consumer_key, api.auth.consumer_secret, api.auth.access_token, api.auth.access_token_secret)
+    threading.Thread(target=stream.filter, kwargs={'track': keywords, 'languages': ["fr"], 'is_async': True}).start()
+    return stream
+
+# ---------------------- INTERFACE STREAMLIT ---------------------- #
+
 st.title("🐦 Agent Twitter AI - Dashboard")
 
-keywords = st.text_input("🔎 Mots-clés à suivre (séparés par des virgules):", "cryptomonnaie, blockchain, web3, politique, technologies").split(",")
+keywords_input = st.text_input("🔎 Mots-clés à suivre (séparés par des virgules):", "cryptomonnaie, blockchain, web3, politique, technologies")
+keywords = [k.strip() for k in keywords_input.split(",") if k.strip()]
 
 col1, col2 = st.columns(2)
 with col1:
     if st.button("▶️ Démarrer l'agent"):
         if not st.session_state.agent_running:
             api = load_twitter_api()
-            st.session_state.stream = collect_tweets(api, [k.strip() for k in keywords])
+            st.session_state.stream = collect_tweets(api, keywords)
             st.session_state.agent_running = True
             st.success("✅ Agent démarré.")
         else:
@@ -82,7 +88,7 @@ with col1:
 
 with col2:
     if st.button("⏹️ Arrêter l'agent"):
-        if st.session_state.agent_running:
+        if st.session_state.agent_running and hasattr(st.session_state, "stream"):
             st.session_state.stream.disconnect()
             st.session_state.agent_running = False
             st.success("🛑 Agent arrêté.")
