@@ -3,9 +3,8 @@ import pandas as pd
 import os
 import requests
 import random
-import time
 from datetime import datetime
-from transformers import pipeline, AutoTokenizer, AutoModelForSeq2SeqLM
+from transformers import pipeline
 
 # ---------------------- INITIALISATION ---------------------- #
 
@@ -16,9 +15,6 @@ def load_bearer_token():
     return bearer_token
 
 sentiment_analyzer = pipeline("sentiment-analysis")
-summarizer = pipeline("summarization")
-tokenizer = AutoTokenizer.from_pretrained("google/pegasus-xsum")
-model = AutoModelForSeq2SeqLM.from_pretrained("google/pegasus-xsum")
 
 if "tweets" not in st.session_state:
     st.session_state.tweets = pd.DataFrame(columns=["Date", "Utilisateur", "Texte", "Sentiment", "Score"])
@@ -26,10 +22,6 @@ if "tweets" not in st.session_state:
 def analyze_sentiment(text):
     result = sentiment_analyzer(text)[0]
     return result['label'], round(result['score'] * 100, 2)
-
-def summarize_text(text):
-    summary = summarizer(text, max_length=50, min_length=25, do_sample=False)
-    return summary[0]['summary_text']
 
 def save_tweets_to_csv():
     st.session_state.tweets.to_csv("tweets.csv", index=False)
@@ -63,12 +55,10 @@ def collect_recent_tweets(bearer_token, keywords, max_results=20):
     new_tweets = []
     for tweet in tweets:
         sentiment, score = analyze_sentiment(tweet["text"])
-        summary = summarize_text(tweet["text"])
         new_tweets.append({
             "Date": tweet["created_at"],
             "Utilisateur": tweet["author_id"],
             "Texte": tweet["text"],
-            "Résumé": summary,
             "Sentiment": sentiment,
             "Score": score
         })
@@ -85,17 +75,17 @@ def collect_recent_tweets(bearer_token, keywords, max_results=20):
 # ---------------------- GÉNÉRATION DE TWEETS ---------------------- #
 
 def generate_tweet_from_trends(tweets):
-    if not tweets:
+    if tweets.empty:
         return "Rien de nouveau pour le moment. Restez connectés !"
 
     top_sentiment = tweets['Sentiment'].mode()[0]
     frequent_words = pd.Series(' '.join(tweets['Texte']).lower().split()).value_counts().head(5).index.tolist()
-    trend = random.choice(frequent_words)
+    trend = random.choice(frequent_words) if frequent_words else "innovation"
 
     tweet_templates = [
         f"La discussion autour de #{trend} est intense aujourd'hui. Que pensez-vous de cette tendance ? 🤔",
         f"Les conversations sur #{trend} montrent un sentiment {top_sentiment.lower()}. Partagez votre avis !",
-        f"#{trend} est au cœur des débats actuellement. Voici ce que la communauté en dit : {tweets.iloc[0]['Résumé']}"
+        f"#{trend} est au cœur des débats actuellement. Quelle est votre opinion ? 💭"
     ]
 
     return random.choice(tweet_templates)
