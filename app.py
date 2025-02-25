@@ -1,210 +1,180 @@
 import streamlit as st
 import pandas as pd
-import os
+import praw
+from mastodon import Mastodon
 import requests
 import random
-import time
-from datetime import datetime
+import os
 from transformers import pipeline
-import tweepy
+from datetime import datetime
 
 # ---------------------- INITIALISATION ---------------------- #
 
-def load_twitter_api():
-    api_key = st.secrets.get("API_KEY")
-    api_secret = st.secrets.get("API_SECRET")
-    access_token = st.secrets.get("ACCESS_TOKEN")
-    access_token_secret = st.secrets.get("ACCESS_TOKEN_SECRET")
+# Chargement des clés API pour Reddit et Mastodon
+def load_reddit_api():
+    reddit = praw.Reddit(
+        client_id=st.secrets.get("REDDIT_CLIENT_ID"),
+        client_secret=st.secrets.get("REDDIT_CLIENT_SECRET"),
+        user_agent=st.secrets.get("REDDIT_USER_AGENT")
+    )
+    return reddit
 
-    if not all([api_key, api_secret, access_token, access_token_secret]):
-        st.error("❌ Clés API manquantes. Vérifiez vos secrets Streamlit.")
-        return None
 
-    auth = tweepy.OAuth1UserHandler(api_key, api_secret, access_token, access_token_secret)
-    api = tweepy.API(auth, wait_on_rate_limit=True)
-    return api
-
-def load_bearer_token():
-    bearer_token = st.secrets.get("BEARER_TOKEN")
-    if not bearer_token:
-        st.error("❌ Bearer Token manquant. Vérifiez vos secrets Streamlit.")
-    return bearer_token
+def load_mastodon_api():
+    mastodon = Mastodon(
+        access_token=st.secrets.get("MASTODON_ACCESS_TOKEN"),
+        api_base_url=st.secrets.get("MASTODON_API_BASE_URL")
+    )
+    return mastodon
 
 sentiment_analyzer = pipeline("sentiment-analysis")
 
-if "tweets" not in st.session_state:
-    st.session_state.tweets = pd.DataFrame(columns=["Date", "Utilisateur", "Texte", "Sentiment", "Score"])
+if "combined_data" not in st.session_state:
+    st.session_state.combined_data = pd.DataFrame(columns=["Plateforme", "Date", "Utilisateur", "Texte", "Sentiment", "Score"])
 
-if "autonomy_enabled" not in st.session_state:
-    st.session_state.autonomy_enabled = False
+# ---------------------- COLLECTE DE DONNÉES ---------------------- #
 
+# Reddit - Collecte de posts
+def collect_reddit_posts(reddit, subreddit_name, limit=10):
+    subreddit = reddit.subreddit(subreddit_name)
+    posts = []
+    for post in subreddit.hot(limit=limit):
+        sentiment, score = analyze_sentiment(post.title + " " + (post.selftext or ""))
+        posts.append({
+            "Plateforme": "Reddit",
+            "Date": datetime.fromtimestamp(post.created_utc).strftime('%Y-%m-%d %H:%M:%S'),
+            "Utilisateur": post.author.name if post.author else "Anonyme",
+            "Texte": post.title + " " + (post.selftext or ""),
+            "Sentiment": sentiment,
+            "Score": score
+        })
+    return posts
+
+# Mastodon - Collecte de toots
+def collect_mastodon_toots(mastodon, hashtag, limit=10):
+    toots = mastodon.timeline_hashtag(hashtag, limit=limit)
+    posts = []
+    for toot in toots:
+        content = toot['content']
+        sentiment, score = analyze_sentiment(content)
+        posts.append({
+            "Plateforme": "Mastodon",
+            "Date": toot['created_at'],
+            "Utilisateur": toot['account']['username'],
+            "Texte": content,
+            "Sentiment": sentiment,
+            "Score": score
+        })
+    return posts
+
+# Jeux de données open source - Import de CSV
+def load_open_source_dataset(file):
+    df = pd.read_csv(file)
+    df['Sentiment'], df['Score'] = zip(*df['Texte'].map(analyze_sentiment))
+    df['Plateforme'] = 'Dataset'
+    return df[['Plateforme', 'Date', 'Utilisateur', 'Texte', 'Sentiment', 'Score']]
+
+# Analyse de sentiments
 def analyze_sentiment(text):
     result = sentiment_analyzer(text)[0]
     return result['label'], round(result['score'] * 100, 2)
 
-def save_tweets_to_csv():
-    st.session_state.tweets.to_csv("tweets.csv", index=False)
+# Sauvegarde des données
+def save_combined_data():
+    st.session_state.combined_data.to_csv("combined_data.csv", index=False)
 
-def load_tweets_from_csv():
-    if os.path.exists("tweets.csv"):
-        st.session_state.tweets = pd.read_csv("tweets.csv")
+# Chargement des données existantes
+def load_combined_data():
+    if os.path.exists("combined_data.csv"):
+        st.session_state.combined_data = pd.read_csv("combined_data.csv")
 
-load_tweets_from_csv()
+load_combined_data()
 
-# ---------------------- COLLECTE DE TWEETS ---------------------- #
+# ---------------------- GÉNÉRATION DE CONTENU ---------------------- #
 
-def collect_recent_tweets(bearer_token, keywords, max_results=10):
-    headers = {"Authorization": f"Bearer {bearer_token}"}
-    query = " OR ".join([k.strip() for k in keywords if k.strip()]) + " -is:retweet lang:fr"
-
-    url = (
-        f"https://api.twitter.com/2/tweets/search/recent?"
-        f"query={query}&max_results={max_results}&tweet.fields=author_id,created_at"
-    )
-
-    response = requests.get(url, headers=headers)
-
-    if response.status_code == 429:
-        st.warning("⚠️ Limite d'utilisation de l'API atteinte. Veuillez réessayer plus tard.")
-        return []
-
-    if response.status_code != 200:
-        st.error(f"🚫 Erreur lors de la collecte des tweets : {response.status_code} - {response.json()}")
-        return []
-
-    data = response.json()
-    tweets = data.get("data", [])
-
-    new_tweets = []
-    for tweet in tweets:
-        sentiment, score = analyze_sentiment(tweet["text"])
-        new_tweets.append({
-            "Date": tweet["created_at"],
-            "Utilisateur": tweet["author_id"],
-            "Texte": tweet["text"],
-            "Sentiment": sentiment,
-            "Score": score
-        })
-
-    st.session_state.tweets = pd.concat(
-        [pd.DataFrame(new_tweets), st.session_state.tweets],
-        ignore_index=True
-    ).drop_duplicates(subset=["Texte"])
-
-    save_tweets_to_csv()
-    return new_tweets
-
-# ---------------------- GÉNÉRATION ET PUBLICATION DE TWEETS ---------------------- #
-
-def generate_tweet_from_trends(tweets):
-    if tweets.empty:
+def generate_trend_based_post(data):
+    if data.empty:
         return "Rien de nouveau pour le moment. Restez connectés !"
 
-    top_sentiment = tweets['Sentiment'].mode()[0]
-    frequent_words = pd.Series(' '.join(tweets['Texte']).lower().split()).value_counts().head(5).index.tolist()
+    frequent_words = pd.Series(' '.join(data['Texte']).lower().split()).value_counts().head(5).index.tolist()
     trend = random.choice(frequent_words) if frequent_words else "innovation"
+    top_sentiment = data['Sentiment'].mode()[0]
 
-    tweet_templates = [
-        f"La discussion autour de #{trend} est intense aujourd'hui. Que pensez-vous de cette tendance ? 🤔",
-        f"Les conversations sur #{trend} montrent un sentiment {top_sentiment.lower()}. Partagez votre avis !",
-        f"#{trend} est au cœur des débats actuellement. Quelle est votre opinion ? 💭"
+    post_templates = [
+        f"La discussion sur #{trend} est en plein essor aujourd'hui. Partagez vos pensées !",
+        f"Les utilisateurs ressentent principalement un sentiment {top_sentiment.lower()} autour de #{trend}. Qu'en pensez-vous ?",
+        f"#{trend} est au cœur des débats. Voici ce qui est dit : {random.choice(data['Texte'].tolist())}"
     ]
 
-    return random.choice(tweet_templates)
-
-def publish_tweet(api, tweet_text):
-    try:
-        api.update_status(tweet_text)
-        st.success(f"✅ Tweet publié avec succès : {tweet_text}")
-    except Exception as e:
-        st.error(f"🚫 Erreur lors de la publication du tweet : {e}")
-
-# ---------------------- LOGIQUE D'AUTONOMIE ---------------------- #
-
-def autonomous_agent(api, bearer_token, keywords, max_results=5):
-    new_tweets = collect_recent_tweets(bearer_token, keywords, max_results)
-    if new_tweets:
-        generated_tweet = generate_tweet_from_trends(st.session_state.tweets)
-        publish_tweet(api, generated_tweet)
+    return random.choice(post_templates)
 
 # ---------------------- INTERFACE STREAMLIT ---------------------- #
 
-st.title("🐦 Agent Twitter AI Autonome - Dashboard")
+st.title("🌍 Agent AI Multiplateforme - Reddit | Mastodon | Open Datasets")
 
-keywords_input = st.text_input("🔎 Mots-clés à suivre (séparés par des virgilles):", "cryptomonnaie, blockchain, web3, politique, technologies")
-keywords = [k.strip() for k in keywords_input.split(",") if k.strip()]
+col1, col2, col3 = st.columns(3)
 
-max_results = st.slider("Nombre de tweets à collecter par recherche :", min_value=1, max_value=10, value=5, step=1)
-
-# Activation/Désactivation de l'autonomie
-if st.button("🚀 Activer l'autonomie" if not st.session_state.autonomy_enabled else "⏹️ Désactiver l'autonomie"):
-    st.session_state.autonomy_enabled = not st.session_state.autonomy_enabled
-    st.success("✅ Autonomie activée." if st.session_state.autonomy_enabled else "🛑 Autonomie désactivée.")
-
-# Si autonomie activée, exécution automatique avec une boucle d'attente
-if st.session_state.autonomy_enabled:
-    st.info("🤖 L'agent est en mode autonome. Collecte et publication automatiques toutes les 60 minutes.")
-
-    placeholder = st.empty()
-
-    while st.session_state.autonomy_enabled:
-        with placeholder.container():
-            st.write(f"⏰ Dernière exécution : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            api = load_twitter_api()
-            bearer_token = load_bearer_token()
-            if api and bearer_token:
-                autonomous_agent(api, bearer_token, keywords, max_results)
-                st.success("✅ Cycle de collecte et publication terminé.")
-            else:
-                st.error("🚫 Impossible de charger les clés API. Vérifiez vos secrets.")
-        time.sleep(3600)  # Attente de 60 minutes entre les cycles
-
-# Boutons manuels pour collecte et génération de tweets
-col1, col2 = st.columns(2)
-
+# Collecte sur Reddit
 with col1:
-    if st.button("📥 Collecter les tweets"):
-        bearer_token = load_bearer_token()
-        if bearer_token:
-            collected_tweets = collect_recent_tweets(bearer_token, keywords, max_results)
-            st.success(f"✅ {len(collected_tweets)} tweets collectés.")
+    st.subheader("📥 Collecte Reddit")
+    subreddit_name = st.text_input("Nom du subreddit:", "cryptocurrency")
+    reddit_limit = st.slider("Nombre de posts à collecter:", 1, 20, 10)
+    if st.button("Collecter depuis Reddit"):
+        reddit = load_reddit_api()
+        reddit_posts = collect_reddit_posts(reddit, subreddit_name, reddit_limit)
+        st.session_state.combined_data = pd.concat([st.session_state.combined_data, pd.DataFrame(reddit_posts)], ignore_index=True)
+        save_combined_data()
+        st.success(f"✅ {len(reddit_posts)} posts collectés depuis Reddit.")
 
+# Collecte sur Mastodon
 with col2:
-    if st.button("✍️ Générer et publier un tweet basé sur les tendances"):
-        api = load_twitter_api()
-        if api and not st.session_state.tweets.empty:
-            generated_tweet = generate_tweet_from_trends(st.session_state.tweets)
-            publish_tweet(api, generated_tweet)
-        else:
-            st.warning("⚠️ Collectez d'abord des tweets pour générer un message.")
+    st.subheader("🐘 Collecte Mastodon")
+    hashtag = st.text_input("Hashtag à suivre (sans #):", "blockchain")
+    mastodon_limit = st.slider("Nombre de toots à collecter:", 1, 20, 10)
+    if st.button("Collecter depuis Mastodon"):
+        mastodon = load_mastodon_api()
+        mastodon_posts = collect_mastodon_toots(mastodon, hashtag, mastodon_limit)
+        st.session_state.combined_data = pd.concat([st.session_state.combined_data, pd.DataFrame(mastodon_posts)], ignore_index=True)
+        save_combined_data()
+        st.success(f"✅ {len(mastodon_posts)} toots collectés depuis Mastodon.")
+
+# Import de jeux de données
+with col3:
+    st.subheader("📂 Importer un dataset")
+    uploaded_file = st.file_uploader("Choisir un fichier CSV:")
+    if uploaded_file:
+        dataset_df = load_open_source_dataset(uploaded_file)
+        st.session_state.combined_data = pd.concat([st.session_state.combined_data, dataset_df], ignore_index=True)
+        save_combined_data()
+        st.success("✅ Données du fichier importées avec succès.")
 
 st.markdown("---")
 
-st.subheader("📄 Tweets collectés")
-if not st.session_state.tweets.empty:
-    st.dataframe(st.session_state.tweets.head(10))
-else:
-    st.info("Aucun tweet collecté pour le moment.")
-
-st.markdown("---")
-
-st.subheader("📊 Visualisation des sentiments")
-if not st.session_state.tweets.empty:
-    sentiment_counts = st.session_state.tweets["Sentiment"].value_counts()
+st.subheader("📊 Visualisation des données combinées")
+if not st.session_state.combined_data.empty:
+    st.dataframe(st.session_state.combined_data.head(20))
+    sentiment_counts = st.session_state.combined_data['Sentiment'].value_counts()
     st.bar_chart(sentiment_counts)
 else:
-    st.info("Aucune donnée disponible pour les graphiques.")
+    st.info("Aucune donnée collectée pour le moment.")
+
+st.markdown("---")
+
+st.subheader("✍️ Génération de contenu basé sur les tendances")
+if st.button("Générer un post basé sur les tendances"):
+    generated_post = generate_trend_based_post(st.session_state.combined_data)
+    st.success(f"📝 Post généré : {generated_post}")
 
 st.markdown("---")
 
 st.subheader("💾 Exporter les données")
-if not st.session_state.tweets.empty:
-    csv = st.session_state.tweets.to_csv(index=False).encode('utf-8')
+if not st.session_state.combined_data.empty:
+    csv = st.session_state.combined_data.to_csv(index=False).encode('utf-8')
     st.download_button(
-        label="📥 Télécharger les tweets en CSV",
+        label="📥 Télécharger les données combinées en CSV",
         data=csv,
-        file_name="tweets_collected.csv",
+        file_name="combined_data.csv",
         mime="text/csv",
     )
 else:
-    st.info("Collectez des tweets avant de pouvoir les télécharger.")
+    st.info("Collectez ou importez des données avant de pouvoir les télécharger.")
