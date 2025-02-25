@@ -8,10 +8,10 @@ import tweepy
 # ---------------------- INITIALISATION ---------------------- #
 
 def load_twitter_api():
-    api_key = st.secrets["6HeKGQ0Ja5j8a7m0whFa2RmtS"]
-    api_secret = st.secrets["jm8VamfS3ysMr8JD5zBQTeWWd183deWKYyGvQmVdlmlPOLKvdn"]
-    access_token = st.secrets["1894174463119495168-uVebuhJ3sQOac4kovU6Xnl9HJrmD8y"]
-    access_token_secret = st.secrets["9Q0X6HSPA3J7ltpi46R8YogqqiUMHQWgq4cAAmEe3DHcL"]
+    api_key = st.secrets["API_KEY"]
+    api_secret = st.secrets["API_SECRET"]
+    access_token = st.secrets["ACCESS_TOKEN"]
+    access_token_secret = st.secrets["ACCESS_TOKEN_SECRET"]
 
     if not all([api_key, api_secret, access_token, access_token_secret]):
         st.error("❌ Clés API manquantes. Vérifiez vos secrets Streamlit.")
