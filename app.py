@@ -3,10 +3,10 @@ import pandas as pd
 import os
 import requests
 import random
+import time
 from datetime import datetime
 from transformers import pipeline
 import tweepy
-from streamlit_autorefresh import st_autorefresh
 
 # ---------------------- INITIALISATION ---------------------- #
 
@@ -131,7 +131,7 @@ def autonomous_agent(api, bearer_token, keywords, max_results=5):
 
 st.title("🐦 Agent Twitter AI Autonome - Dashboard")
 
-keywords_input = st.text_input("🔎 Mots-clés à suivre (séparés par des virgules):", "cryptomonnaie, blockchain, web3, politique, technologies")
+keywords_input = st.text_input("🔎 Mots-clés à suivre (séparés par des virgilles):", "cryptomonnaie, blockchain, web3, politique, technologies")
 keywords = [k.strip() for k in keywords_input.split(",") if k.strip()]
 
 max_results = st.slider("Nombre de tweets à collecter par recherche :", min_value=1, max_value=10, value=5, step=1)
@@ -141,14 +141,23 @@ if st.button("🚀 Activer l'autonomie" if not st.session_state.autonomy_enabled
     st.session_state.autonomy_enabled = not st.session_state.autonomy_enabled
     st.success("✅ Autonomie activée." if st.session_state.autonomy_enabled else "🛑 Autonomie désactivée.")
 
-# Si autonomie activée, exécution automatique toutes les 60 minutes (pour éviter la limite d'API)
+# Si autonomie activée, exécution automatique avec une boucle d'attente
 if st.session_state.autonomy_enabled:
     st.info("🤖 L'agent est en mode autonome. Collecte et publication automatiques toutes les 60 minutes.")
-    api = load_twitter_api()
-    bearer_token = load_bearer_token()
-    if api and bearer_token:
-        autonomous_agent(api, bearer_token, keywords, max_results)
-    st_autorefresh(interval=3600000, key="autorefresh")  # Refresh toutes les 60 minutes
+
+    placeholder = st.empty()
+
+    while st.session_state.autonomy_enabled:
+        with placeholder.container():
+            st.write(f"⏰ Dernière exécution : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            api = load_twitter_api()
+            bearer_token = load_bearer_token()
+            if api and bearer_token:
+                autonomous_agent(api, bearer_token, keywords, max_results)
+                st.success("✅ Cycle de collecte et publication terminé.")
+            else:
+                st.error("🚫 Impossible de charger les clés API. Vérifiez vos secrets.")
+        time.sleep(3600)  # Attente de 60 minutes entre les cycles
 
 # Boutons manuels pour collecte et génération de tweets
 col1, col2 = st.columns(2)
