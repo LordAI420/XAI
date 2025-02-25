@@ -1,3 +1,4 @@
 twitter_ai_agent/
- src/
-    app.py  
+├── app.py   ← à la racine
+├── twitter_bot.py
+├── requirements.txt
