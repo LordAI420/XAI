@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import threading
 import os
 from datetime import datetime
 from transformers import pipeline
@@ -9,17 +8,22 @@ import tweepy
 # ---------------------- INITIALISATION ---------------------- #
 
 def load_twitter_api():
-    bearer_token = st.secrets.get("BEARER_TOKEN")
-    if not bearer_token:
-        st.error("❌ Bearer Token manquant. Veuillez le configurer dans les secrets Streamlit.")
-    return bearer_token
+    api_key = st.secrets.get("6HeKGQ0Ja5j8a7m0whFa2RmtS")
+    api_secret = st.secrets.get("jm8VamfS3ysMr8JD5zBQTeWWd183deWKYyGvQmVdlmlPOLKvdn")
+    access_token = st.secrets.get("1894174463119495168-uVebuhJ3sQOac4kovU6Xnl9HJrmD8y")
+    access_token_secret = st.secrets.get("9Q0X6HSPA3J7ltpi46R8YogqqiUMHQWgq4cAAmEe3DHcL")
+
+    if not all([api_key, api_secret, access_token, access_token_secret]):
+        st.error("❌ Clés API manquantes. Vérifiez vos secrets Streamlit.")
+        return None
+
+    auth = tweepy.OAuth1UserHandler(api_key, api_secret, access_token, access_token_secret)
+    api = tweepy.API(auth, wait_on_rate_limit=True)
+    return api
 
 sentiment_analyzer = pipeline("sentiment-analysis")
 
 # Initialisation des états Streamlit
-if "agent_running" not in st.session_state:
-    st.session_state.agent_running = False
-
 if "tweets" not in st.session_state:
     st.session_state.tweets = pd.DataFrame(columns=["Date", "Utilisateur", "Texte", "Sentiment", "Score"])
 
@@ -36,87 +40,53 @@ def load_tweets_from_csv():
 
 load_tweets_from_csv()
 
-# ---------------------- STREAMING ---------------------- #
-class MyStreamListener(tweepy.StreamingClient):
-    def on_tweet(self, tweet):
-        if tweet.lang != "fr" or hasattr(tweet, "referenced_tweets"):
+# ---------------------- COLLECTE DE TWEETS ---------------------- #
+
+def collect_recent_tweets(api, keywords, max_results=20):
+    query = " OR ".join([k.strip() for k in keywords if k.strip()]) + " -is:retweet lang:fr"
+    
+    try:
+        tweets = api.search_tweets(q=query, count=max_results, tweet_mode="extended", lang="fr")
+        
+        if not tweets:
+            st.info("🔍 Aucun tweet trouvé pour les mots-clés fournis.")
             return
 
-        sentiment, score = analyze_sentiment(tweet.text)
-        new_tweet = {
-            "Date": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            "Utilisateur": tweet.author_id,
-            "Texte": tweet.text,
-            "Sentiment": sentiment,
-            "Score": score
-        }
+        new_tweets = []
+        for tweet in tweets:
+            sentiment, score = analyze_sentiment(tweet.full_text)
+            new_tweets.append({
+                "Date": tweet.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+                "Utilisateur": tweet.user.screen_name,
+                "Texte": tweet.full_text,
+                "Sentiment": sentiment,
+                "Score": score
+            })
 
-        st.session_state.tweets = pd.concat(
-            [pd.DataFrame([new_tweet]), st.session_state.tweets],
-            ignore_index=True
-        )
+        st.session_state.tweets = pd.concat([
+            pd.DataFrame(new_tweets),
+            st.session_state.tweets
+        ], ignore_index=True).drop_duplicates(subset=["Texte"])
+        
         save_tweets_to_csv()
+        st.success(f"✅ {len(new_tweets)} tweets collectés avec succès.")
 
-    def on_errors(self, errors):
-        st.error(f"Erreur rencontrée : {errors}")
-
-def collect_tweets(bearer_token, keywords):
-    stream = MyStreamListener(bearer_token)
-
-    try:
-        existing_rules = stream.get_rules()
-        if existing_rules and existing_rules.data:
-            rule_ids = [rule.id for rule in existing_rules.data]
-            stream.delete_rules(rule_ids)
-
-        cleaned_keywords = [k.strip() for k in keywords if k.strip()]
-        if cleaned_keywords:
-            stream.add_rules(tweepy.StreamRule(value=" OR ".join(cleaned_keywords)))
-        else:
-            st.warning("⚠️ Aucun mot-clé valide fourni. Veuillez entrer des mots-clés valides.")
-            return None
-
-        threading.Thread(target=stream.filter, kwargs={'tweet_fields': ['lang', 'author_id'], 'threaded': True}).start()
-        return stream
-
-    except tweepy.errors.Forbidden as e:
-        st.error("🚫 Accès interdit. Vérifiez les autorisations de votre application Twitter et le Bearer Token.")
-        return None
-    except Exception as e:
-        st.error(f"🚫 Erreur inattendue : {e}")
-        return None
+    except tweepy.TweepyException as e:
+        st.error(f"🚫 Erreur lors de la collecte des tweets : {e}")
 
 # ---------------------- INTERFACE STREAMLIT ---------------------- #
 
-st.title("🐦 Agent Twitter AI - Dashboard")
+st.title("🐦 Agent Twitter AI - Dashboard (Version Gratuite)")
 
-keywords_input = st.text_input("🔎 Mots-clés à suivre (séparés par des virgules):", "cryptomonnaie, blockchain, web3, politique, technologies")
+keywords_input = st.text_input("🔎 Mots-clés à rechercher (séparés par des virgules):", "cryptomonnaie, blockchain, web3, politique, technologies")
 keywords = [k.strip() for k in keywords_input.split(",") if k.strip()]
 
-col1, col2 = st.columns(2)
-with col1:
-    if st.button("▶️ Démarrer l'agent"):
-        if not st.session_state.agent_running:
-            bearer_token = load_twitter_api()
-            if bearer_token:
-                stream = collect_tweets(bearer_token, keywords)
-                if stream:
-                    st.session_state.stream = stream
-                    st.session_state.agent_running = True
-                    st.success("✅ Agent démarré.")
-                else:
-                    st.error("🚫 Impossible de démarrer l'agent.")
-        else:
-            st.warning("⚠️ L'agent est déjà en cours d'exécution.")
+max_results = st.slider("Nombre de tweets à collecter par recherche :", min_value=5, max_value=50, value=20, step=5)
 
-with col2:
-    if st.button("⏹️ Arrêter l'agent"):
-        if st.session_state.agent_running and hasattr(st.session_state, "stream"):
-            st.session_state.stream.disconnect()
-            st.session_state.agent_running = False
-            st.success("🛑 Agent arrêté.")
-        else:
-            st.warning("⚠️ Aucun agent en cours d'exécution.")
+if st.button("📥 Collecter les tweets"):
+    api = load_twitter_api()
+    if api:
+        collect_recent_tweets(api, keywords, max_results)
 
 st.markdown("---")
 
