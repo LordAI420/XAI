@@ -2,8 +2,10 @@ import streamlit as st
 import pandas as pd
 import os
 import requests
+import random
+import time
 from datetime import datetime
-from transformers import pipeline
+from transformers import pipeline, AutoTokenizer, AutoModelForSeq2SeqLM
 
 # ---------------------- INITIALISATION ---------------------- #
 
@@ -14,6 +16,9 @@ def load_bearer_token():
     return bearer_token
 
 sentiment_analyzer = pipeline("sentiment-analysis")
+summarizer = pipeline("summarization")
+tokenizer = AutoTokenizer.from_pretrained("google/pegasus-xsum")
+model = AutoModelForSeq2SeqLM.from_pretrained("google/pegasus-xsum")
 
 if "tweets" not in st.session_state:
     st.session_state.tweets = pd.DataFrame(columns=["Date", "Utilisateur", "Texte", "Sentiment", "Score"])
@@ -21,6 +26,10 @@ if "tweets" not in st.session_state:
 def analyze_sentiment(text):
     result = sentiment_analyzer(text)[0]
     return result['label'], round(result['score'] * 100, 2)
+
+def summarize_text(text):
+    summary = summarizer(text, max_length=50, min_length=25, do_sample=False)
+    return summary[0]['summary_text']
 
 def save_tweets_to_csv():
     st.session_state.tweets.to_csv("tweets.csv", index=False)
@@ -31,12 +40,12 @@ def load_tweets_from_csv():
 
 load_tweets_from_csv()
 
-# ---------------------- COLLECTE DE TWEETS (API V2) ---------------------- #
+# ---------------------- COLLECTE DE TWEETS ---------------------- #
 
 def collect_recent_tweets(bearer_token, keywords, max_results=20):
     headers = {"Authorization": f"Bearer {bearer_token}"}
     query = " OR ".join([k.strip() for k in keywords if k.strip()]) + " -is:retweet lang:fr"
-    
+
     url = (
         f"https://api.twitter.com/2/tweets/search/recent?"
         f"query={query}&max_results={max_results}&tweet.fields=author_id,created_at"
@@ -46,22 +55,20 @@ def collect_recent_tweets(bearer_token, keywords, max_results=20):
 
     if response.status_code != 200:
         st.error(f"🚫 Erreur lors de la collecte des tweets : {response.status_code} - {response.json()}")
-        return
+        return []
 
     data = response.json()
     tweets = data.get("data", [])
 
-    if not tweets:
-        st.info("🔍 Aucun tweet trouvé pour les mots-clés fournis.")
-        return
-
     new_tweets = []
     for tweet in tweets:
         sentiment, score = analyze_sentiment(tweet["text"])
+        summary = summarize_text(tweet["text"])
         new_tweets.append({
             "Date": tweet["created_at"],
             "Utilisateur": tweet["author_id"],
             "Texte": tweet["text"],
+            "Résumé": summary,
             "Sentiment": sentiment,
             "Score": score
         })
@@ -73,20 +80,50 @@ def collect_recent_tweets(bearer_token, keywords, max_results=20):
 
     save_tweets_to_csv()
     st.success(f"✅ {len(new_tweets)} tweets collectés avec succès.")
+    return new_tweets
+
+# ---------------------- GÉNÉRATION DE TWEETS ---------------------- #
+
+def generate_tweet_from_trends(tweets):
+    if not tweets:
+        return "Rien de nouveau pour le moment. Restez connectés !"
+
+    top_sentiment = tweets['Sentiment'].mode()[0]
+    frequent_words = pd.Series(' '.join(tweets['Texte']).lower().split()).value_counts().head(5).index.tolist()
+    trend = random.choice(frequent_words)
+
+    tweet_templates = [
+        f"La discussion autour de #{trend} est intense aujourd'hui. Que pensez-vous de cette tendance ? 🤔",
+        f"Les conversations sur #{trend} montrent un sentiment {top_sentiment.lower()}. Partagez votre avis !",
+        f"#{trend} est au cœur des débats actuellement. Voici ce que la communauté en dit : {tweets.iloc[0]['Résumé']}"
+    ]
+
+    return random.choice(tweet_templates)
 
 # ---------------------- INTERFACE STREAMLIT ---------------------- #
 
-st.title("🐦 Agent Twitter AI - Dashboard (Version Gratuite API v2)")
+st.title("🐦 Agent Twitter AI Autonome - Dashboard")
 
-keywords_input = st.text_input("🔎 Mots-clés à rechercher (séparés par des virgules):", "cryptomonnaie, blockchain, web3, politique, technologies")
+keywords_input = st.text_input("🔎 Mots-clés à suivre (séparés par des virgules):", "cryptomonnaie, blockchain, web3, politique, technologies")
 keywords = [k.strip() for k in keywords_input.split(",") if k.strip()]
 
 max_results = st.slider("Nombre de tweets à collecter par recherche :", min_value=5, max_value=50, value=20, step=5)
 
-if st.button("📥 Collecter les tweets"):
-    bearer_token = load_bearer_token()
-    if bearer_token:
-        collect_recent_tweets(bearer_token, keywords, max_results)
+col1, col2 = st.columns(2)
+
+with col1:
+    if st.button("📥 Collecter les tweets"):
+        bearer_token = load_bearer_token()
+        if bearer_token:
+            collected_tweets = collect_recent_tweets(bearer_token, keywords, max_results)
+
+with col2:
+    if st.button("✍️ Générer un tweet basé sur les tendances"):
+        if not st.session_state.tweets.empty:
+            generated_tweet = generate_tweet_from_trends(st.session_state.tweets)
+            st.success(f"📝 Tweet généré : {generated_tweet}")
+        else:
+            st.warning("⚠️ Collectez d'abord des tweets pour générer un message.")
 
 st.markdown("---")
 
