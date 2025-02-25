@@ -3,10 +3,26 @@ import pandas as pd
 import os
 import requests
 import random
+import time
 from datetime import datetime
 from transformers import pipeline
+import tweepy
 
 # ---------------------- INITIALISATION ---------------------- #
+
+def load_twitter_api():
+    api_key = st.secrets.get("API_KEY")
+    api_secret = st.secrets.get("API_SECRET")
+    access_token = st.secrets.get("ACCESS_TOKEN")
+    access_token_secret = st.secrets.get("ACCESS_TOKEN_SECRET")
+
+    if not all([api_key, api_secret, access_token, access_token_secret]):
+        st.error("❌ Clés API manquantes. Vérifiez vos secrets Streamlit.")
+        return None
+
+    auth = tweepy.OAuth1UserHandler(api_key, api_secret, access_token, access_token_secret)
+    api = tweepy.API(auth, wait_on_rate_limit=True)
+    return api
 
 def load_bearer_token():
     bearer_token = st.secrets.get("BEARER_TOKEN")
@@ -18,6 +34,9 @@ sentiment_analyzer = pipeline("sentiment-analysis")
 
 if "tweets" not in st.session_state:
     st.session_state.tweets = pd.DataFrame(columns=["Date", "Utilisateur", "Texte", "Sentiment", "Score"])
+
+if "autonomy_enabled" not in st.session_state:
+    st.session_state.autonomy_enabled = False
 
 def analyze_sentiment(text):
     result = sentiment_analyzer(text)[0]
@@ -69,10 +88,9 @@ def collect_recent_tweets(bearer_token, keywords, max_results=20):
     ).drop_duplicates(subset=["Texte"])
 
     save_tweets_to_csv()
-    st.success(f"✅ {len(new_tweets)} tweets collectés avec succès.")
     return new_tweets
 
-# ---------------------- GÉNÉRATION DE TWEETS ---------------------- #
+# ---------------------- GÉNÉRATION ET PUBLICATION DE TWEETS ---------------------- #
 
 def generate_tweet_from_trends(tweets):
     if tweets.empty:
@@ -90,6 +108,21 @@ def generate_tweet_from_trends(tweets):
 
     return random.choice(tweet_templates)
 
+def publish_tweet(api, tweet_text):
+    try:
+        api.update_status(tweet_text)
+        st.success(f"✅ Tweet publié avec succès : {tweet_text}")
+    except Exception as e:
+        st.error(f"🚫 Erreur lors de la publication du tweet : {e}")
+
+# ---------------------- LOGIQUE D'AUTONOMIE ---------------------- #
+
+def autonomous_agent(api, bearer_token, keywords, max_results=10):
+    new_tweets = collect_recent_tweets(bearer_token, keywords, max_results)
+    if new_tweets:
+        generated_tweet = generate_tweet_from_trends(st.session_state.tweets)
+        publish_tweet(api, generated_tweet)
+
 # ---------------------- INTERFACE STREAMLIT ---------------------- #
 
 st.title("🐦 Agent Twitter AI Autonome - Dashboard")
@@ -99,6 +132,21 @@ keywords = [k.strip() for k in keywords_input.split(",") if k.strip()]
 
 max_results = st.slider("Nombre de tweets à collecter par recherche :", min_value=5, max_value=50, value=20, step=5)
 
+# Activation/Désactivation de l'autonomie
+if st.button("🚀 Activer l'autonomie" if not st.session_state.autonomy_enabled else "⏹️ Désactiver l'autonomie"):
+    st.session_state.autonomy_enabled = not st.session_state.autonomy_enabled
+    st.success("✅ Autonomie activée." if st.session_state.autonomy_enabled else "🛑 Autonomie désactivée.")
+
+# Si autonomie activée, exécution automatique toutes les 10 minutes
+if st.session_state.autonomy_enabled:
+    st.info("🤖 L'agent est en mode autonome. Collecte et publication automatiques en cours...")
+    api = load_twitter_api()
+    bearer_token = load_bearer_token()
+    if api and bearer_token:
+        autonomous_agent(api, bearer_token, keywords, max_results)
+    st.experimental_autorefresh(interval=600000, key="autorefresh")  # Refresh toutes les 10 minutes
+
+# Boutons manuels pour collecte et génération de tweets
 col1, col2 = st.columns(2)
 
 with col1:
@@ -106,12 +154,14 @@ with col1:
         bearer_token = load_bearer_token()
         if bearer_token:
             collected_tweets = collect_recent_tweets(bearer_token, keywords, max_results)
+            st.success(f"✅ {len(collected_tweets)} tweets collectés.")
 
 with col2:
-    if st.button("✍️ Générer un tweet basé sur les tendances"):
-        if not st.session_state.tweets.empty:
+    if st.button("✍️ Générer et publier un tweet basé sur les tendances"):
+        api = load_twitter_api()
+        if api and not st.session_state.tweets.empty:
             generated_tweet = generate_tweet_from_trends(st.session_state.tweets)
-            st.success(f"📝 Tweet généré : {generated_tweet}")
+            publish_tweet(api, generated_tweet)
         else:
             st.warning("⚠️ Collectez d'abord des tweets pour générer un message.")
 
