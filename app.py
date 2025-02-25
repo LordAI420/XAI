@@ -1,4 +1,4 @@
 twitter_ai_agent/
-app.py   ← à la racine
+app.py 
 twitter_bot.py
 requirements.txt
