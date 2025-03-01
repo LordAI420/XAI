@@ -8,7 +8,7 @@ import random
 import os
 import time
 from transformers import pipeline
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
 from bs4 import BeautifulSoup
 import matplotlib.pyplot as plt
@@ -29,8 +29,8 @@ def load_mastodon_api():
         api_base_url=st.secrets.get("MASTODON_API_BASE_URL")
     )
 
-# Chargement du pipeline d'analyse de sentiment avec un modèle léger
-sentiment_analyzer = pipeline("sentiment-analysis", model="distilbert-base-uncased-finetuned-sst-2-english", device=-1)
+# Chargement du pipeline d'analyse de sentiment adapté aux cryptos & Web3
+sentiment_analyzer = pipeline("text-classification", model="cardiffnlp/twitter-roberta-base-sentiment", tokenizer="cardiffnlp/twitter-roberta-base-sentiment", device=-1)
 
 # Connexion à SQLite
 conn = sqlite3.connect("data.db", check_same_thread=False)
@@ -62,29 +62,33 @@ def clean_text(text):
 
 def analyze_sentiment(text):
     if not text or text.isspace():
-        return "Neutral", 0.0
-    cleaned_text = clean_text(text)[:512]
+        return "Neutre", 50.0  # Retourne un score neutre si le texte est vide
+    cleaned_text = clean_text(text)[:512]  # Nettoyage et limitation à 512 caractères
     try:
-        result = sentiment_analyzer(cleaned_text)[0]
-        return result['label'], round(result['score'] * 100, 2)
+        result = sentiment_analyzer(cleaned_text)[0]  # Passage au modèle NLP
+        label = result['label']  # Récupération du sentiment
+        score = round(result['score'] * 100, 2)  # Score en pourcentage
+
+        # Adaptation des labels spécifiques à la crypto & Web3
+        label_map = {"LABEL_0": "Négatif", "LABEL_1": "Neutre", "LABEL_2": "Positif"}
+        sentiment = label_map.get(label, "Neutre")
+
+        return sentiment, score
     except Exception as e:
         st.warning(f"Erreur d'analyse du texte : {e}")
-        return "Error", 0.0
+        return "Erreur", 0.0
 
-# Stockage des données dans SQLite
 def store_data(plateforme, date, utilisateur, texte, sentiment, score):
     cursor.execute("INSERT INTO posts (plateforme, date, utilisateur, texte, sentiment, score) VALUES (?, ?, ?, ?, ?, ?)",
                    (plateforme, date, utilisateur, texte, sentiment, score))
     conn.commit()
 
-# Récupération des données depuis SQLite
 def fetch_data():
-    return pd.read_sql("SELECT * FROM posts ORDER BY date DESC LIMIT 100", conn)
+    return pd.read_sql("SELECT * FROM posts ORDER BY date DESC LIMIT 500", conn)
 
 # ---------------------- COLLECTE AUTOMATISÉE ---------------------- #
 
 def collect_reddit_posts(reddit, subreddit_name, limit=50):
-    posts = []
     try:
         subreddit = reddit.subreddit(subreddit_name)
         for post in subreddit.hot(limit=limit):
@@ -92,23 +96,18 @@ def collect_reddit_posts(reddit, subreddit_name, limit=50):
             sentiment, score = analyze_sentiment(text)
             store_data("Reddit", datetime.fromtimestamp(post.created_utc).strftime('%Y-%m-%d %H:%M:%S'),
                        post.author.name if post.author else "Anonyme", clean_text(text), sentiment, score)
-            posts.append(text)
     except Exception as e:
         st.warning(f"⚠️ Problème avec l'API Reddit : {e}")
-    return posts
 
 def collect_mastodon_toots(mastodon, hashtag, limit=50):
-    posts = []
     try:
         toots = mastodon.timeline_hashtag(hashtag, limit=limit)
         for toot in toots:
             content = clean_text(toot['content'])
             sentiment, score = analyze_sentiment(content)
             store_data("Mastodon", toot['created_at'], toot['account']['username'], content, sentiment, score)
-            posts.append(content)
     except Exception as e:
         st.warning(f"⚠️ Problème avec l'API Mastodon : {e}")
-    return posts
 
 def autonomous_agent():
     request_delay = 1800  # 30 minutes
@@ -121,25 +120,30 @@ def autonomous_agent():
         if mastodon:
             collect_mastodon_toots(mastodon, "blockchain", 50)
         st.success("✅ Cycle de collecte terminé.")
-        time.sleep(request_delay)  # Délai intelligent pour éviter le blocage
+        time.sleep(request_delay)
 
-# ---------------------- ANALYSE DES TENDANCES ---------------------- #
+# ---------------------- SUIVI DE L'APPRENTISSAGE ---------------------- #
 
 data = fetch_data()
 
-st.subheader("📊 Analyse des tendances")
+st.subheader("📊 Évolution des tendances et apprentissage")
 if not data.empty:
-    sentiment_counts = data['sentiment'].value_counts()
+    st.write("### Évolution des sentiments sur 7 jours")
+    data['date'] = pd.to_datetime(data['date'])
+    past_week = datetime.now() - timedelta(days=7)
+    recent_data = data[data['date'] >= past_week]
+    sentiment_counts = recent_data.groupby(['date', 'sentiment']).size().unstack(fill_value=0)
     fig, ax = plt.subplots()
-    sentiment_counts.plot(kind='bar', ax=ax)
+    sentiment_counts.plot(kind='line', ax=ax)
     ax.set_ylabel("Nombre de posts")
+    ax.set_xlabel("Date")
     st.pyplot(fig)
 else:
-    st.info("Aucune donnée à analyser.")
+    st.info("Aucune donnée récente à analyser.")
 
 # ---------------------- INTERFACE STREAMLIT ---------------------- #
 
-st.title("🌍 Agent AI Autonome - Reddit | Mastodon | Stockage en SQLite")
+st.title("🌍 Agent AI Autonome - Suivi de l'apprentissage Crypto/Web3")
 
 if st.button("🚀 Activer l'autonomie" if not st.session_state.autonomy_enabled else "⏹️ Désactiver l'autonomie"):
     st.session_state.autonomy_enabled = not st.session_state.autonomy_enabled
@@ -151,7 +155,7 @@ if st.button("🚀 Activer l'autonomie" if not st.session_state.autonomy_enabled
 
 st.markdown("---")
 
-st.subheader("📊 Visualisation des données collectées")
+st.subheader("📊 Données collectées et analyse des tendances")
 if not data.empty:
     st.dataframe(data.head(20))
     csv = data.to_csv(index=False).encode('utf-8')
