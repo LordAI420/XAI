@@ -29,7 +29,7 @@ def load_mastodon_api():
         api_base_url=st.secrets.get("MASTODON_API_BASE_URL")
     )
 
-# Chargement du pipeline d'analyse de sentiment adapté aux cryptos & Web3
+# Chargement du pipeline d'analyse de sentiment
 sentiment_analyzer = pipeline("text-classification", model="cardiffnlp/twitter-roberta-base-sentiment", tokenizer="cardiffnlp/twitter-roberta-base-sentiment", device=-1)
 
 # Connexion à SQLite
@@ -129,7 +129,8 @@ data = fetch_data()
 st.subheader("📊 Évolution des tendances et apprentissage")
 if not data.empty:
     st.write("### Évolution des sentiments sur 7 jours")
-    data['date'] = pd.to_datetime(data['date'])
+    data['date'] = pd.to_datetime(data['date'], errors='coerce')  # Correction de conversion de date
+    data = data.dropna(subset=['date'])  # Suppression des lignes avec dates invalides
     past_week = datetime.now() - timedelta(days=7)
     recent_data = data[data['date'] >= past_week]
     sentiment_counts = recent_data.groupby(['date', 'sentiment']).size().unstack(fill_value=0)
@@ -140,25 +141,3 @@ if not data.empty:
     st.pyplot(fig)
 else:
     st.info("Aucune donnée récente à analyser.")
-
-# ---------------------- INTERFACE STREAMLIT ---------------------- #
-
-st.title("🌍 Agent AI Autonome - Suivi de l'apprentissage Crypto/Web3")
-
-if st.button("🚀 Activer l'autonomie" if not st.session_state.autonomy_enabled else "⏹️ Désactiver l'autonomie"):
-    st.session_state.autonomy_enabled = not st.session_state.autonomy_enabled
-    if st.session_state.autonomy_enabled:
-        st.success("✅ Autonomie activée ! Collecte et analyse en cours...")
-        autonomous_agent()
-    else:
-        st.warning("🛑 Autonomie désactivée.")
-
-st.markdown("---")
-
-st.subheader("📊 Données collectées et analyse des tendances")
-if not data.empty:
-    st.dataframe(data.head(20))
-    csv = data.to_csv(index=False).encode('utf-8')
-    st.download_button(label="📥 Télécharger les données en CSV", data=csv, file_name="data.csv", mime="text/csv")
-else:
-    st.info("Aucune donnée collectée pour le moment.")
